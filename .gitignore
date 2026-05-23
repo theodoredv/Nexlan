@@ -28,8 +28,6 @@ tailwind-output.css
 *.swp
 *.swo
 *~
-.trae/
-.workbuddy/
 
 # OS
 .DS_Store
@@ -43,9 +41,3 @@ Thumbs.db
 
 # Backup files
 *.bak
-
-# Obsolete configs
-Caddyfile
-CONFIG.md
-setup.sh
-vercel.json
