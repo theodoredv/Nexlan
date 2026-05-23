@@ -1,0 +1,23 @@
+services:
+  nexlan:
+    build: .
+    ports:
+      - "34567:34567"
+    volumes:
+      - nexlan-data:/app/data
+      - nexlan-uploads:/app/uploads
+      - nexlan-chunks:/app/chunks
+      - nexlan-thumbnails:/app/thumbnails
+      - nexlan-logs:/app/logs
+    environment:
+      - NODE_ENV=production
+      - PORT=34567
+      - UPLOAD_LIMIT=10mb
+    restart: unless-stopped
+
+volumes:
+  nexlan-data:
+  nexlan-uploads:
+  nexlan-chunks:
+  nexlan-thumbnails:
+  nexlan-logs:

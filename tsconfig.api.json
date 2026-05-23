@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "outDir": "./api/dist",
+    "rootDir": ".",
+    "declaration": false,
+    "sourceMap": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": false
+  },
+  "include": [
+    "api/**/*.ts",
+    "shared/**/*.ts"
+  ],
+  "exclude": [
+    "api/test/**",
+    "api/dist/**",
+    "node_modules",
+    "src"
+  ]
+}

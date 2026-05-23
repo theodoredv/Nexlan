@@ -1,0 +1,51 @@
+# Temporary files
+chunks/
+thumbnails/
+
+# Runtime data
+data/
+!data/.gitkeep
+uploads/
+logs/
+
+# Environment variables
+.env
+.env.local
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Build output
+dist/
+build/
+api/dist/
+tailwind-output.css
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.trae/
+.workbuddy/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SSL certificates
+*.pem
+
+# Binary archives
+*.tar.gz
+
+# Backup files
+*.bak
+
+# Obsolete configs
+Caddyfile
+CONFIG.md
+setup.sh
+vercel.json

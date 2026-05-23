@@ -1,0 +1,28 @@
+{
+  "apps": [
+    {
+      "name": "backend",
+      "script": "npm",
+      "args": "run server:dev",
+      "instances": 1,
+      "autorestart": true,
+      "watch": ["api"],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "max_memory_restart": "500M"
+    },
+    {
+      "name": "frontend",
+      "script": "npm",
+      "args": "run client:dev",
+      "instances": 1,
+      "autorestart": true,
+      "watch": ["src"],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "max_memory_restart": "500M"
+    }
+  ]
+}

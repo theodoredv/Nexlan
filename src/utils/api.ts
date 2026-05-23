@@ -1,0 +1,400 @@
+
+import { FileItem, Message, NetworkInfo, SSEMessage } from '../../shared/types';
+import { uploadConfig } from '../config/upload';
+
+const API_BASE = '/api';
+const CHUNK_SIZE = uploadConfig.chunkSize;
+const CONCURRENT_CHUNKS = uploadConfig.concurrentChunks;
+const TIMEOUT = uploadConfig.timeout;
+
+/** 带超时的 fetch，超时后自动中止请求 */
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = TIMEOUT): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function getFiles(): Promise<FileItem[]> {
+  const res = await fetch(`${API_BASE}/files`);
+  if (!res.ok) throw new Error('Failed to get files');
+  return res.json();
+}
+
+export async function checkFileExists(md5: string, size: number, signal?: AbortSignal): Promise<{ exists: boolean; file?: FileItem; uploadedChunks?: number[] }> {
+  const res = await fetchWithTimeout(`${API_BASE}/files/check-file`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ md5, size }),
+    signal,
+  });
+  if (!res.ok) throw new Error('Failed to check file');
+  return res.json();
+}
+
+export async function uploadChunk(md5: string, chunk: Blob, chunkIndex: number, totalChunks: number, fileName: string, fileSize: number, fileType: string, fileId: string, signal?: AbortSignal): Promise<void> {
+  const formData = new FormData();
+  formData.append('chunk', chunk);
+  formData.append('md5', md5);
+  formData.append('chunkIndex', chunkIndex.toString());
+  formData.append('totalChunks', totalChunks.toString());
+  formData.append('fileName', fileName);
+  formData.append('fileSize', fileSize.toString());
+  formData.append('fileType', fileType);
+  formData.append('fileId', fileId);
+  
+  const res = await fetchWithTimeout(`${API_BASE}/files/upload-chunk`, {
+    method: 'POST',
+    body: formData,
+    signal,
+  });
+  if (!res.ok) throw new Error('Failed to upload chunk');
+}
+
+export async function sendUploadStart(files: { id: string; name: string; size: number; type: string; uploadedAt: string; status: string; progress: number }[], signal?: AbortSignal): Promise<void> {
+  const res = await fetchWithTimeout(`${API_BASE}/files/upload-start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files }),
+    signal,
+  });
+  if (!res.ok) throw new Error('Failed to send upload start event');
+}
+
+export async function mergeChunks(md5: string, fileName: string, fileSize: number, fileType: string, totalChunks: number, signal?: AbortSignal): Promise<FileItem> {
+  const res = await fetchWithTimeout(`${API_BASE}/files/merge-chunks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ md5, fileName, fileSize, fileType, totalChunks }),
+    signal,
+  });
+  if (!res.ok) throw new Error('Failed to merge chunks');
+  const data = await res.json();
+  return data.file;
+}
+
+export async function uploadFiles(
+  files: File[], 
+  onProgress?: (progress: number, fileName: string) => void,
+  fileIds?: string[],
+  signal?: AbortSignal
+): Promise<FileItem[]> {
+  console.log('[uploadFiles] Starting upload for files:', files.map(f => f.name));
+  const { calculateMD5WithCache } = await import('./crypto');
+  const uploadedFiles: FileItem[] = [];
+  
+  // 发送上传开始事件
+  if (fileIds && fileIds.length > 0) {
+    const uploadStartFiles = files.map((file, index) => ({
+      id: fileIds[index],
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      uploadedAt: new Date().toISOString(),
+      status: 'uploading',
+      progress: 0
+    }));
+    try {
+      await sendUploadStart(uploadStartFiles, signal);
+      console.log('[uploadFiles] Upload start event sent');
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+      console.error('[uploadFiles] Failed to send upload start event:', error);
+    }
+  }
+  
+  for (const [index, file] of files.entries()) {
+    if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+
+    try {
+      console.log('[uploadFiles] Processing file:', file.name, 'size:', file.size);
+      
+      let md5: string;
+      try {
+        md5 = await Promise.race([
+          calculateMD5WithCache(file, (progress) => {
+            if (onProgress) {
+              onProgress(Math.round(progress * 10), file.name);
+            }
+          }),
+          new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('MD5计算超时，跳过秒传检测')), TIMEOUT)
+          ),
+        ]);
+      } catch {
+        if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+        console.warn('[uploadFiles] MD5 calculation failed, uploading without dedup');
+        md5 = `fallback-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      }
+      console.log('[uploadFiles] MD5:', md5);
+      
+      const checkResult = await checkFileExists(md5, file.size, signal);
+      console.log('[uploadFiles] Check result:', checkResult);
+      
+      if (checkResult.exists && checkResult.file) {
+        console.log('[uploadFiles] File exists, instant upload');
+        uploadedFiles.push(checkResult.file);
+        if (onProgress) onProgress(100, file.name);
+        continue;
+      }
+      
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+      console.log('[uploadFiles] Total chunks:', totalChunks);
+      
+      const uploadedChunks = new Set(checkResult.uploadedChunks || []);
+      console.log('[uploadFiles] Already uploaded chunks:', [...uploadedChunks]);
+      
+      let uploadedCount = uploadedChunks.size;
+      const uploadedChunksSet = new Set(uploadedChunks);
+      const fileId = fileIds ? fileIds[index] : `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      const uploadChunkWithProgress = async (chunkIndex: number) => {
+        if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+        if (uploadedChunksSet.has(chunkIndex)) return;
+        
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        
+        console.log('[uploadFiles] Uploading chunk:', chunkIndex);
+        await uploadChunk(md5, chunk, chunkIndex, totalChunks, file.name, file.size, file.type, fileId, signal);
+        
+        uploadedCount++;
+        uploadedChunksSet.add(chunkIndex);
+        
+        if (onProgress) {
+          const progress = Math.round(10 + (uploadedCount / totalChunks) * 90);
+          console.log('[uploadFiles] Progress:', progress, '%');
+          onProgress(progress, file.name);
+        }
+      };
+      
+      const chunksToUpload = [];
+      for (let i = 0; i < totalChunks; i++) {
+        if (!uploadedChunks.has(i)) {
+          chunksToUpload.push(i);
+        }
+      }
+      
+      console.log('[uploadFiles] Chunks to upload:', chunksToUpload);
+      
+      for (let i = 0; i < chunksToUpload.length; i += CONCURRENT_CHUNKS) {
+        if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+        const batch = chunksToUpload.slice(i, i + CONCURRENT_CHUNKS);
+        console.log('[uploadFiles] Uploading batch:', batch);
+        await Promise.all(batch.map(uploadChunkWithProgress));
+      }
+      
+      console.log('[uploadFiles] Merging chunks...');
+      const mergedFile = await mergeChunks(md5, file.name, file.size, file.type, totalChunks, signal);
+      console.log('[uploadFiles] File merged:', mergedFile);
+      uploadedFiles.push(mergedFile);
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+      console.error('[uploadFiles] Error uploading file:', file.name, error);
+      throw error;
+    }
+  }
+  
+  console.log('[uploadFiles] Upload complete:', uploadedFiles);
+  return uploadedFiles;
+}
+
+export async function downloadFile(id: string, name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/files/${id}/download`);
+  if (!res.ok) throw new Error('Failed to download file');
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}
+
+export async function deleteFile(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/files/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete file');
+}
+
+export async function getMessages(): Promise<Message[]> {
+  const res = await fetch(`${API_BASE}/messages`);
+  if (!res.ok) throw new Error('Failed to get messages');
+  return res.json();
+}
+
+export async function sendMessage(content: string, sender: string, senderId: string): Promise<Message> {
+  const res = await fetch(`${API_BASE}/messages/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, sender, senderId }),
+  });
+  if (!res.ok) throw new Error('Failed to send message');
+  return res.json();
+}
+
+export function subscribeToMessages(
+  onMessage: (message: SSEMessage) => void,
+  onReconnect?: () => void
+): () => void {
+  let closed = false;
+  let currentES: EventSource | null = null;
+  let delay = 1000;
+  const maxDelay = 30000;
+
+  function connect() {
+    if (closed) return;
+
+    const es = new EventSource(`${API_BASE}/messages/stream`);
+    currentES = es;
+
+    es.onopen = () => {
+      delay = 1000;
+    };
+
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      onMessage(data);
+    };
+
+    es.onerror = () => {
+      es.close();
+      currentES = null;
+      if (closed) return;
+
+      if (onReconnect) onReconnect();
+      delay = Math.min(delay * 2, maxDelay);
+      setTimeout(connect, delay);
+    };
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (currentES) {
+      currentES.close();
+      currentES = null;
+    }
+  };
+}
+
+export async function getNetworkInfo(): Promise<NetworkInfo> {
+  const res = await fetch(`${API_BASE}/network`);
+  if (!res.ok) throw new Error('Failed to get network info');
+  return res.json();
+}
+
+export function subscribeToFiles(
+  onUpload: (files: FileItem[]) => void,
+  onDelete: (fileId: string) => void,
+  onUploadStart?: (files: FileItem[]) => void,
+  onUploadChunk?: (fileId: string, chunkIndex: number, totalChunks: number) => void,
+  onReconnect?: () => void
+): () => void {
+  let closed = false;
+  let currentES: EventSource | null = null;
+  let delay = 1000;
+  const maxDelay = 30000;
+
+  function connect() {
+    if (closed) return;
+
+    const es = new EventSource(`${API_BASE}/files/stream`);
+    currentES = es;
+
+    es.onopen = () => {
+      delay = 1000;
+    };
+
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'upload') {
+        onUpload(data.files);
+      } else if (data.type === 'delete') {
+        onDelete(data.fileId);
+      } else if (data.type === 'upload-start' && onUploadStart) {
+        onUploadStart(data.files);
+      } else if (data.type === 'upload-chunk' && onUploadChunk) {
+        onUploadChunk(data.fileId, parseInt(data.chunkIndex), parseInt(data.totalChunks));
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+      currentES = null;
+      if (closed) return;
+
+      if (onReconnect) onReconnect();
+      delay = Math.min(delay * 2, maxDelay);
+      setTimeout(connect, delay);
+    };
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (currentES) {
+      currentES.close();
+      currentES = null;
+    }
+  };
+}
+
+export async function getDeviceName(deviceId: string): Promise<{ deviceId: string; name: string }> {
+  const res = await fetch(`${API_BASE}/device-names/${deviceId}`);
+  if (!res.ok) throw new Error('Failed to get device name');
+  return res.json();
+}
+
+export async function setDeviceName(deviceId: string, name: string): Promise<{ deviceId: string; name: string; oldName?: string }> {
+  const res = await fetch(`${API_BASE}/device-names/${deviceId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error('Failed to set device name');
+  return res.json();
+}
+
+export async function updateMessageSender(senderId: string, newName: string): Promise<{ updated: number }> {
+  const res = await fetch(`${API_BASE}/messages/update-sender`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ senderId, newName }),
+  });
+  if (!res.ok) throw new Error('Failed to update message sender');
+  return res.json();
+}
+
+export async function deleteMessage(id: string): Promise<{ success: true }> {
+  const res = await fetch(`${API_BASE}/messages/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete message');
+  return res.json();
+}
+
+export async function deleteMessagesBatch(ids: string[]): Promise<{ success: true; deleted: number }> {
+  const res = await fetch(`${API_BASE}/messages/batch`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error('Failed to batch delete messages');
+  return res.json();
+}
