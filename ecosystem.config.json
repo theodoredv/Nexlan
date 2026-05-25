@@ -1,26 +1,14 @@
 {
   "apps": [
     {
-      "name": "backend",
-      "script": "npm",
-      "args": "run server:dev",
+      "name": "nexlan",
+      "script": "npx",
+      "args": "tsx api/server.ts",
       "instances": 1,
       "autorestart": true,
-      "watch": ["api"],
       "env": {
-        "NODE_ENV": "development"
-      },
-      "max_memory_restart": "500M"
-    },
-    {
-      "name": "frontend",
-      "script": "npm",
-      "args": "run client:dev",
-      "instances": 1,
-      "autorestart": true,
-      "watch": ["src"],
-      "env": {
-        "NODE_ENV": "development"
+        "NODE_ENV": "production",
+        "PORT": 34567
       },
       "max_memory_restart": "500M"
     }
