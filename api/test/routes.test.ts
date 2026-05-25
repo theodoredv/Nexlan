@@ -132,3 +132,94 @@ describe('Device Names API', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('POST /api/messages/send - validation', () => {
+  it('should reject content over 10000 characters', async () => {
+    const longContent = 'a'.repeat(10001);
+    const res = await request(app).post('/api/messages/send').send({
+      content: longContent,
+      sender: 'Test',
+      senderId: 'dev-1',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('should reject sender name over 50 characters', async () => {
+    const longSender = 'a'.repeat(51);
+    const res = await request(app).post('/api/messages/send').send({
+      content: 'Hello',
+      sender: longSender,
+      senderId: 'dev-1',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('should reject whitespace-only content', async () => {
+    const res = await request(app).post('/api/messages/send').send({
+      content: '   ',
+      sender: 'Test',
+      senderId: 'dev-1',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('should accept content at max length', async () => {
+    const res = await request(app).post('/api/messages/send').send({
+      content: 'a'.repeat(10000),
+      sender: 'Test',
+      senderId: 'dev-1',
+    });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('POST /api/device-names/:deviceId - validation', () => {
+  it('should reject name over 50 characters', async () => {
+    const res = await request(app).post('/api/device-names/dev-1').send({
+      name: 'a'.repeat(51),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('should reject whitespace-only name', async () => {
+    const res = await request(app).post('/api/device-names/dev-1').send({
+      name: '   ',
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/files/merge-chunks - validation', () => {
+  it('should reject empty fileName', async () => {
+    const res = await request(app).post('/api/files/merge-chunks').send({
+      md5: 'test-md5',
+      fileName: '',
+      fileSize: 100,
+      fileType: 'text/plain',
+      totalChunks: 1,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('should reject fileName over 255 characters', async () => {
+    const res = await request(app).post('/api/files/merge-chunks').send({
+      md5: 'test-md5',
+      fileName: 'a'.repeat(256),
+      fileSize: 100,
+      fileType: 'text/plain',
+      totalChunks: 1,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('should reject totalChunks over 10000', async () => {
+    const res = await request(app).post('/api/files/merge-chunks').send({
+      md5: 'test-md5',
+      fileName: 'test.txt',
+      fileSize: 100,
+      fileType: 'text/plain',
+      totalChunks: 10001,
+    });
+    expect(res.status).toBe(400);
+  });
+});

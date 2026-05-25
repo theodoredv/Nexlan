@@ -5,7 +5,7 @@ import { Chat } from '../../components/Chat';
 import { useAppStore } from '../../store';
 import { Message } from '../../../shared/types';
 
-vi.mock('../../utils/api', () => ({
+vi.mock('../../utils/api/index', () => ({
   sendMessage: vi.fn().mockResolvedValue({ id: '1', content: 'test', sender: 'me', senderId: 'dev-1', timestamp: new Date().toISOString() }),
 }));
 
@@ -86,7 +86,7 @@ describe('Chat', () => {
   });
 
   it('should call sendMessage on form submit', async () => {
-    const { sendMessage } = await import('../../utils/api');
+    const { sendMessage } = await import('../../utils/api/index');
     const user = userEvent.setup();
     render(<Chat messages={[]} />);
 
@@ -100,7 +100,7 @@ describe('Chat', () => {
   });
 
   it('should not send empty message', async () => {
-    const { sendMessage } = await import('../../utils/api');
+    const { sendMessage } = await import('../../utils/api/index');
     const mockedSendMessage = vi.mocked(sendMessage);
     mockedSendMessage.mockClear();
 

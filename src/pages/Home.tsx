@@ -10,6 +10,10 @@ import { Message } from '../../shared/types';
 
 const uploadedChunksMap: { [key: string]: Set<number> } = {};
 
+function cleanupUploadedChunks(fileId: string) {
+  delete uploadedChunksMap[fileId];
+}
+
 export function Home() {
   const [activeTab, setActiveTab] = useState<'chat' | 'files'>('chat');
   const messages = useAppStore(function (state) {
@@ -69,20 +73,16 @@ export function Home() {
     const unsubscribeFiles = subscribeToFiles(
       function (uploadedFiles) {
         uploadedFiles.forEach(function (file) {
-          // 使用函数式更新来确保获取最新的文件列表
+          cleanupUploadedChunks(file.id);
           setFiles(prevFiles => {
-            // 查找是否有对应的临时文件（通过文件名匹配）
             const tempFile = prevFiles.find(f => f.name === file.name && f.status === 'uploading');
             if (tempFile) {
-              // 更新临时文件为真实文件
               return prevFiles.map(f => 
                 f.id === tempFile.id ? file : f
               );
             } else {
-              // 如果没有临时文件，检查是否已存在
               const exists = prevFiles.some(f => f.id === file.id);
               if (!exists) {
-                // 添加新文件
                 return [file, ...prevFiles];
               }
               return prevFiles;
@@ -91,6 +91,7 @@ export function Home() {
         });
       },
       function (fileId) {
+        cleanupUploadedChunks(fileId);
         removeFile(fileId);
       },
       function (uploadingFiles) {

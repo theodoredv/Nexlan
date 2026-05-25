@@ -19,6 +19,14 @@ vi.mock('../../utils/api', () => ({
     name: 'NewDevice',
   }),
   updateMessageSender: vi.fn().mockResolvedValue({ updated: 0 }),
+  getHealthInfo: vi.fn().mockResolvedValue({
+    success: true,
+    message: 'ok',
+    uptime: 3600,
+    memory: { rss: '50MB', heapUsed: '30MB', heapTotal: '40MB' },
+    disk: { data: '1MB', uploads: '100MB', updatedAt: Date.now() },
+    sse: { totalConnections: 5, channels: { files: { connections: 2, lastEventId: 0 }, messages: { connections: 3, lastEventId: 0 } } },
+  }),
 }));
 
 describe('NetworkBar', () => {
@@ -88,6 +96,31 @@ describe('NetworkBar', () => {
 
     const modeText = screen.queryByText('浅色模式') || screen.queryByText('深色模式');
     expect(modeText).toBeTruthy();
+  });
+
+  it('should show server status option in menu', async () => {
+    const user = userEvent.setup();
+    render(<NetworkBar />);
+
+    const menuButton = screen.getByTitle('菜单');
+    await user.click(menuButton);
+
+    expect(screen.getByText('服务器状态')).toBeInTheDocument();
+  });
+
+  it('should open server status panel on click', async () => {
+    const user = userEvent.setup();
+    render(<NetworkBar />);
+
+    const menuButton = screen.getByTitle('菜单');
+    await user.click(menuButton);
+
+    const statusButton = screen.getByText('服务器状态');
+    await user.click(statusButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('服务器状态')).toBeInTheDocument();
+    });
   });
 
   it('should show edit name modal on click', async () => {

@@ -13,7 +13,14 @@
     "url": "https://github.com/theodoredv/Nexlan/issues"
   },
   "homepage": "https://github.com/theodoredv/Nexlan#readme",
-  "keywords": ["lan", "file-transfer", "chat", "express", "react", "typescript"],
+  "keywords": [
+    "lan",
+    "file-transfer",
+    "chat",
+    "express",
+    "react",
+    "typescript"
+  ],
   "scripts": {
     "client:dev": "vite",
     "build": "tsc -b && vite build",
@@ -29,6 +36,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "better-sqlite3": "^12.10.0",
     "cors": "2.8.6",
     "dotenv": "17.4.2",
     "express": "4.22.1",
@@ -47,6 +55,7 @@
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.2.0",
     "@testing-library/user-event": "14.6.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "2.8.19",
     "@types/express": "4.17.25",
     "@types/fluent-ffmpeg": "2.1.28",

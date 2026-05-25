@@ -7,19 +7,20 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import fs from 'fs'
 import path from 'path'
-import { fileURLToPath } from 'url'
 import { router as filesRouter } from './routes/files'
 import { router as messagesRouter } from './routes/messages'
 import { router as networkRouter } from './routes/network'
 import { router as deviceNamesRouter } from './routes/deviceNames'
 import { getSSEStats } from './sse'
+import { projectRoot, dataDir, uploadsDir } from './config.js'
+import { createLogger } from './logger.js'
+
+const log = createLogger('app')
 
 dotenv.config()
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const UPLOAD_LIMIT = process.env.UPLOAD_LIMIT || '10mb'
 const isProduction = process.env.NODE_ENV === 'production'
-const projectRoot = path.join(__dirname, '..')
 
 const app: express.Application = express()
 
@@ -32,20 +33,44 @@ app.use('/api/messages', messagesRouter)
 app.use('/api/network', networkRouter)
 app.use('/api/device-names', deviceNamesRouter)
 
+let diskCache = { data: '0MB', uploads: '0MB', updatedAt: 0 };
+
+async function getDirSizeRecursive(dir: string): Promise<number> {
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    let totalSize = 0;
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile()) {
+        const stats = await fs.promises.stat(fullPath);
+        totalSize += stats.size;
+      } else if (entry.isDirectory()) {
+        totalSize += await getDirSizeRecursive(fullPath);
+      }
+    }
+    return totalSize;
+  } catch {
+    return 0;
+  }
+}
+
+async function updateDiskCache() {
+  const [dataSize, uploadsSize] = await Promise.all([
+    getDirSizeRecursive(dataDir),
+    getDirSizeRecursive(uploadsDir),
+  ]);
+  diskCache = {
+    data: `${Math.round(dataSize / 1024 / 1024)}MB`,
+    uploads: `${Math.round(uploadsSize / 1024 / 1024)}MB`,
+    updatedAt: Date.now(),
+  };
+}
+setInterval(updateDiskCache, 30000);
+updateDiskCache();
+
 app.use(
   '/api/health',
-  (_req: Request, res: Response): void => {
-    const dataDir = path.join(projectRoot, 'data');
-    const uploadsDir = path.join(projectRoot, 'uploads');
-
-    function getDirSize(dir: string): number {
-      if (!fs.existsSync(dir)) return 0;
-      return fs.readdirSync(dir).reduce((size, file) => {
-        const stats = fs.statSync(path.join(dir, file));
-        return size + (stats.isFile() ? stats.size : 0);
-      }, 0);
-    }
-
+  async (_req: Request, res: Response): Promise<void> => {
     const memUsage = process.memoryUsage();
 
     res.status(200).json({
@@ -57,10 +82,7 @@ app.use(
         heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
         heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
       },
-      disk: {
-        data: `${Math.round(getDirSize(dataDir) / 1024 / 1024)}MB`,
-        uploads: `${Math.round(getDirSize(uploadsDir) / 1024 / 1024)}MB`,
-      },
+      disk: diskCache,
       sse: getSSEStats(),
     });
   },
@@ -83,7 +105,8 @@ app.use((_req: Request, res: Response) => {
   })
 })
 
-app.use((_error: Error, _req: Request, res: Response, _next: () => void) => {
+app.use((error: Error, _req: Request, res: Response, _next: () => void) => {
+  log.error('Unhandled error:', error);
   res.status(500).json({
     success: false,
     error: 'Server internal error',

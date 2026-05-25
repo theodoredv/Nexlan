@@ -26,7 +26,9 @@ describe('Health Check', () => {
     expect(res.body.message).toBe('ok');
     expect(res.body).toHaveProperty('uptime');
     expect(res.body).toHaveProperty('memory');
-    expect(res.body).toHaveProperty('disk');
+    expect(res.body.disk).toHaveProperty('data');
+    expect(res.body.disk).toHaveProperty('uploads');
+    expect(res.body.disk).toHaveProperty('updatedAt');
     expect(res.body).toHaveProperty('sse');
   });
 });

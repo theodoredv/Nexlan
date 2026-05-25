@@ -16,12 +16,18 @@ export function Chat({ messages }: ChatProps) {
   const deviceName = useAppStore((state) => state.deviceName);
   const deviceId = useAppStore((state) => state.deviceId);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isMe = (messageSenderId: string) => messageSenderId === deviceId;
   const { handleFileUpload } = useFileUpload();
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+    if (isNearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
 
   const handleSend = useCallback(
@@ -62,7 +68,7 @@ export function Chat({ messages }: ChatProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-5">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-5">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-500">
             <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-3xl bg-gradient-to-br from-slate-200/50 to-slate-300/50 dark:from-slate-700/50 dark:to-slate-800/50 flex items-center justify-center mb-4 sm:mb-6 border border-slate-300/50 dark:border-slate-700/50">

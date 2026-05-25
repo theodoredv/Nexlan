@@ -3,22 +3,19 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { FileItem } from '../../shared/types';
 import { createLogger } from '../logger.js';
 import { createSSEManager } from '../sse.js';
+import { db } from '../database.js';
+import { uploadsDir, chunksDir, thumbnailsDir, ensureDir, extToMime } from '../config.js';
 
 const log = createLogger('files');
 const sse = createSSEManager('files');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.join(__dirname, '../..');
-
 const allowedDirs = [
-  path.resolve(path.join(projectRoot, 'uploads')),
-  path.resolve(path.join(projectRoot, 'thumbnails')),
+  path.resolve(uploadsDir),
+  path.resolve(thumbnailsDir),
 ];
 
 function isPathSafe(filePath: string): boolean {
@@ -28,22 +25,9 @@ function isPathSafe(filePath: string): boolean {
 
 const router = express.Router();
 
-const uploadsDir = path.join(projectRoot, 'uploads');
-const chunksDir = path.join(projectRoot, 'chunks');
-const thumbnailsDir = path.join(projectRoot, 'thumbnails');
-const dataDir = path.join(projectRoot, 'data');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-if (!fs.existsSync(chunksDir)) {
-  fs.mkdirSync(chunksDir, { recursive: true });
-}
-if (!fs.existsSync(thumbnailsDir)) {
-  fs.mkdirSync(thumbnailsDir, { recursive: true });
-}
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
+ensureDir(uploadsDir);
+ensureDir(chunksDir);
+ensureDir(thumbnailsDir);
 
 const chunkStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -84,28 +68,21 @@ const chunkUpload = multer({ storage: chunkStorage, limits: { fileSize: CHUNK_UP
 const files: Map<string, FileItem & { path: string; thumbnailPath?: string }> = new Map();
 const fileMd5Map: Map<string, string> = new Map();
 
-const indexFilePath = path.join(dataDir, 'files-index.json');
-function saveFileIndex() {
-  try {
-    const obj: Record<string, string> = {};
-    fileMd5Map.forEach((fileId, md5) => { obj[md5] = fileId; });
-    fs.writeFileSync(indexFilePath, JSON.stringify(obj, null, 2));
-  } catch (error) {
-    log.error('Failed to save file index:', error);
-  }
-}
+const upsertMd5Stmt = db.prepare('INSERT INTO file_md5_index (md5, file_id) VALUES (?, ?) ON CONFLICT(md5) DO UPDATE SET file_id = excluded.file_id');
+const deleteMd5ByFileIdStmt = db.prepare('DELETE FROM file_md5_index WHERE file_id = ?');
+
 function loadFileIndex() {
   try {
-    if (fs.existsSync(indexFilePath)) {
-      const raw = fs.readFileSync(indexFilePath, 'utf-8');
-      const obj = JSON.parse(raw);
-      Object.entries(obj).forEach(([md5, fileId]) => {
-        if (files.has(fileId as string)) {
-          fileMd5Map.set(md5, fileId as string);
-        }
-      });
-      log.info(`Loaded ${fileMd5Map.size} file MD5 index entries`);
+    const rows = db.prepare('SELECT md5, file_id FROM file_md5_index').all() as Array<{
+      md5: string;
+      file_id: string;
+    }>;
+    for (const row of rows) {
+      if (files.has(row.file_id)) {
+        fileMd5Map.set(row.md5, row.file_id);
+      }
     }
+    log.info(`Loaded ${fileMd5Map.size} file MD5 index entries from database`);
   } catch (error) {
     log.error('Failed to load file index:', error);
   }
@@ -135,35 +112,49 @@ function isVideoFile(fileName: string): boolean {
   return videoExts.includes(ext);
 }
 
-fs.readdirSync(uploadsDir).forEach((filename) => {
-  const filePath = path.join(uploadsDir, filename);
-  const stat = fs.statSync(filePath);
-  const parts = filename.split('-');
-  const id = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : Date.now().toString();
-  const originalName = parts.length >= 2 ? parts.slice(2).join('-') : filename;
-  
-  const thumbnailPath = path.join(thumbnailsDir, `${id}.jpg`);
-  const fileItem: FileItem & { path: string; thumbnailPath?: string } = {
-    id,
-    name: originalName,
-    size: stat.size,
-    type: path.extname(filename) || 'application/octet-stream',
-    uploadedAt: stat.mtime.toISOString(),
-    path: filePath,
-  };
-  
-  if (fs.existsSync(thumbnailPath)) {
-    fileItem.thumbnailPath = thumbnailPath;
+function sanitizeFile<T extends FileItem & { path?: string; thumbnailPath?: string }>(file: T): FileItem {
+  const { path: _p, thumbnailPath: _t, ...rest } = file;
+  return rest;
+}
+
+async function loadFilesFromDisk(): Promise<void> {
+  const entries = await fs.promises.readdir(uploadsDir);
+  for (const filename of entries) {
+    const filePath = path.join(uploadsDir, filename);
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) continue;
+    const parts = filename.split('-');
+    const id = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : Date.now().toString();
+    const originalName = parts.length >= 2 ? parts.slice(2).join('-') : filename;
+    
+    const thumbnailPath = path.join(thumbnailsDir, `${id}.jpg`);
+    const fileItem: FileItem & { path: string; thumbnailPath?: string } = {
+      id,
+      name: originalName,
+      size: stat.size,
+      type: extToMime(filename),
+      uploadedAt: stat.mtime.toISOString(),
+      path: filePath,
+    };
+    
+    try {
+      await fs.promises.access(thumbnailPath);
+      fileItem.thumbnailPath = thumbnailPath;
+    } catch {
+      // no thumbnail
+    }
+    
+    files.set(id, fileItem);
   }
-  
-  files.set(id, fileItem);
-});
+}
+
+await loadFilesFromDisk();
 
 log.info(`Loaded ${files.size} files from disk`);
 loadFileIndex();
 
 router.get('/', (_req, res) => {
-  const fileList = Array.from(files.values()).map(({ path: _p, ...item }) => item);
+  const fileList = Array.from(files.values()).map(sanitizeFile);
   res.json(fileList);
 });
 
@@ -175,7 +166,7 @@ router.post('/check-file', (req, res) => {
     const file = files.get(fileId)!;
     if (file.size === size) {
       log.debug(`File exists (instant upload): ${file.name}`);
-      return res.json({ exists: true, file: { ...file, path: undefined } });
+      return res.json({ exists: true, file: sanitizeFile(file) });
     }
   }
   
@@ -195,9 +186,7 @@ router.post('/upload-chunk', chunkUpload.single('chunk'), (req, res) => {
     const chunkPath = path.join(chunksDir, `${md5}-${chunkIndex}`);
     
     try {
-      if (!fs.existsSync(chunksDir)) {
-        fs.mkdirSync(chunksDir, { recursive: true });
-      }
+      ensureDir(chunksDir);
       
       const chunkData = fs.readFileSync(req.file.path);
       fs.writeFileSync(chunkPath, chunkData);
@@ -240,22 +229,35 @@ router.post('/upload-start', (req, res) => {
 router.post('/merge-chunks', async (req, res) => {
   const { md5, fileName, fileSize, fileType, totalChunks } = req.body;
   
+  if (!fileName || fileName.length > 255) {
+    return res.status(400).json({ error: 'Invalid file name' });
+  }
+  const total = parseInt(totalChunks);
+  if (isNaN(total) || total < 1 || total > 10000) {
+    return res.status(400).json({ error: 'Invalid total chunks' });
+  }
+  
   try {
     const id = Date.now().toString() + '-' + Math.round(Math.random() * 1e9);
     const outputPath = path.join(uploadsDir, `${id}-${fileName}`);
-    log.info(`Merging ${totalChunks} chunks for: ${fileName}`);
+    log.info(`Merging ${total} chunks for: ${fileName}`);
     const writeStream = fs.createWriteStream(outputPath);
     
-    for (let i = 0; i < parseInt(totalChunks); i++) {
+    for (let i = 0; i < total; i++) {
       const chunkPath = path.join(chunksDir, `${md5}-${i}`);
       if (!fs.existsSync(chunkPath)) {
-        log.error(`Chunk ${i} missing for ${fileName}`);
+        writeStream.destroy();
         return res.status(400).json({ error: `Chunk ${i} missing` });
       }
-      
-      const chunkData = fs.readFileSync(chunkPath);
-      writeStream.write(chunkData);
-      fs.unlinkSync(chunkPath);
+      await new Promise<void>((resolve, reject) => {
+        const chunkStream = fs.createReadStream(chunkPath);
+        chunkStream.on('end', () => {
+          fs.promises.unlink(chunkPath).catch(() => {});
+          resolve();
+        });
+        chunkStream.on('error', reject);
+        chunkStream.pipe(writeStream, { end: false });
+      });
     }
     
     await new Promise<void>((resolve, reject) => {
@@ -267,8 +269,8 @@ router.post('/merge-chunks', async (req, res) => {
     const fileItem: FileItem & { path: string; thumbnailPath?: string } = {
       id,
       name: fileName,
-      size: parseInt(fileSize),
-      type: fileType,
+      size: parseInt(fileSize) || 0,
+      type: fileType || extToMime(fileName),
       uploadedAt: new Date().toISOString(),
       path: outputPath,
     };
@@ -285,15 +287,15 @@ router.post('/merge-chunks', async (req, res) => {
     
     files.set(id, fileItem);
     fileMd5Map.set(md5, id);
-    saveFileIndex();
+    upsertMd5Stmt.run(md5, id);
     
     log.info(`File merged and saved: ${fileName} (${fileItem.size} bytes), broadcasting to ${sse.getClientCount()} clients`);
     
-    const fileToBroadcast = { ...fileItem, path: undefined };
+    const fileToBroadcast = sanitizeFile(fileItem);
     
     sse.broadcast({ type: 'upload', files: [fileToBroadcast] });
     
-    res.json({ file: { ...fileItem, path: undefined } });
+    res.json({ file: fileToBroadcast });
   } catch (error) {
     log.error('Merge chunks failed:', error);
     res.status(500).json({ error: 'Failed to merge chunks' });
@@ -307,8 +309,9 @@ router.post('/upload', upload.array('files'), (req, res) => {
 
   const uploadedFiles: FileItem[] = [];
   req.files.forEach((file) => {
-    const id = file.filename.split('-')[0];
-    const originalName = file.filename.split('-').slice(1).join('-') || file.originalname;
+    const parts = file.filename.split('-');
+    const id = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : file.filename;
+    const originalName = parts.length >= 2 ? parts.slice(2).join('-') || file.originalname : file.originalname;
     const fileItem: FileItem & { path: string } = {
       id,
       name: originalName,
@@ -318,7 +321,7 @@ router.post('/upload', upload.array('files'), (req, res) => {
       path: file.path,
     };
     files.set(id, fileItem);
-    uploadedFiles.push(fileItem);
+    uploadedFiles.push(sanitizeFile(fileItem));
   });
 
   log.info(`Simple upload: ${uploadedFiles.map(f => f.name).join(', ')}`);
@@ -326,6 +329,10 @@ router.post('/upload', upload.array('files'), (req, res) => {
   sse.broadcast({ type: 'upload', files: uploadedFiles });
 
   res.json(uploadedFiles);
+});
+
+router.get('/stream', (req, res) => {
+  sse.addClient(req, res);
 });
 
 router.get('/:id/preview', (req, res) => {
@@ -374,7 +381,7 @@ router.delete('/:id', (req, res) => {
         fileMd5Map.delete(md5);
       }
     }
-    saveFileIndex();
+    deleteMd5ByFileIdStmt.run(req.params.id);
     
     sse.broadcast({ type: 'delete', fileId: req.params.id });
     
@@ -383,10 +390,6 @@ router.delete('/:id', (req, res) => {
   } catch {
     res.status(500).json({ error: 'Failed to delete file' });
   }
-});
-
-router.get('/stream', (req, res) => {
-  sse.addClient(req, res);
 });
 
 export { router, files };

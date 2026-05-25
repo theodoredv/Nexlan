@@ -40,13 +40,19 @@ export function createSSEManager(name: string) {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
-    const lastEventId = parseInt(req.headers['last-event-id'] as string) || 0;
+    const lastEventIdHeader = parseInt(req.headers['last-event-id'] as string) || 0;
+    const lastEventIdQuery = parseInt(req.query.lastEventId as string) || 0;
+    const lastEventId = Math.max(lastEventIdHeader, lastEventIdQuery);
 
     const client: SSEClient = {
       res,
       heartbeat: setInterval(() => {
         try {
           res.write(': heartbeat\n\n');
+          clearTimeout(client.timeout);
+          client.timeout = setTimeout(() => {
+            removeClient(res, 'connection timeout (no close event)');
+          }, CLIENT_TIMEOUT_MS);
         } catch {
           removeClient(res, 'heartbeat write failed');
         }
